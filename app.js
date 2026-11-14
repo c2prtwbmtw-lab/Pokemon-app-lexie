@@ -22,26 +22,35 @@ function scanCandidates(cards,ocrNames,ocrNumber){
  el.querySelectorAll('[data-scanmatch]').forEach(btn=>btn.onclick=()=>detail(unique[Number(btn.dataset.scanmatch)].c.id));
  if(certain)detail(best.c.id);return true;
 }
+// V6: OCR exclusively on the name in the top-left and collector number at the bottom.
 async function scanRegions(file){
- const bitmap=await createImageBitmap(file);const w=bitmap.width,h=bitmap.height;
- const regions=[[0,0,1,1],[0,0,1,.34],[0,.72,1,.28]];
- const worker=await Tesseract.createWorker('eng');let output=[];
+ const bitmap=await createImageBitmap(file),w=bitmap.width,h=bitmap.height;
+ // The photo should show the card upright, tightly framed.
+ const regions=[{x:.025,y:.015,w:.69,h:.17,kind:'name'},
+                {x:.015,y:.87,w:.56,h:.125,kind:'number'},
+                {x:.48,y:.87,w:.50,h:.125,kind:'number'}];
+ const worker=await Tesseract.createWorker('eng');const output={name:[],number:[]};
  try{for(let i=0;i<regions.length;i++){
-  $('#scanstatus').textContent=`Kaart herkennen… stap ${i+1} van ${regions.length}`;
-  const [rx,ry,rw,rh]=regions[i],cw=Math.round(w*rw),ch=Math.round(h*rh);
-  const canvas=document.createElement('canvas');const scale=Math.min(2.2,1600/cw);canvas.width=Math.round(cw*scale);canvas.height=Math.round(ch*scale);
-  const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.fillStyle='white';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(bitmap,Math.round(w*rx),Math.round(h*ry),cw,ch,0,0,canvas.width,canvas.height);
-  const r=await worker.recognize(canvas);output.push(r.data.text||'');
+  const r=regions[i];$('#scanstatus').textContent=`Naam en kaartnummer lezen… ${i+1}/${regions.length}`;
+  const canvas=document.createElement('canvas'),cw=Math.max(1,Math.round(w*r.w)),ch=Math.max(1,Math.round(h*r.h));
+  const scale=Math.min(4,2100/cw);canvas.width=Math.round(cw*scale);canvas.height=Math.round(ch*scale);
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(bitmap,Math.round(w*r.x),Math.round(h*r.y),cw,ch,0,0,canvas.width,canvas.height);
+  const result=await worker.recognize(canvas);output[r.kind].push(result.data.text||'');
  }}finally{await worker.terminate();bitmap.close?.()}
  return output;
 }
 function extractScanText(texts){
- const raw=texts.join('\n'),lines=texts.flatMap(t=>t.split(/\r?\n/)).map(x=>x.trim()).filter(Boolean);
- const blacklist=/^(basic|stage|trainer|pokemon|pokémon|hp\s*\d+|illustrator|weakness|resistance|retreat|ability|attack|supporter|item|energy|evolves|rule|©|damage|search|draw|flip|your|opponent|this|during|once|put|attach|discard|bench|active|from|when|each|the|you|it|if|a\s)/i;
- const names=[];for(const line of lines){let cleaned=line.replace(/\b(?:HP|LV|EX|GX|VSTAR|VMAX)\s*\d+\b/gi,'').replace(/[^a-zA-Z0-9éÉ♀♂ .'-]/g,' ').replace(/\s+/g,' ').trim();if(cleaned.length>=3&&cleaned.length<=32&&/[a-zA-Z]{3}/.test(cleaned)&&!blacklist.test(cleaned)&&!/^\d/.test(cleaned)&&!names.includes(cleaned))names.push(cleaned)}
- const matches=[...raw.matchAll(/\b(\d{1,3})\s*[/\\]\s*(\d{1,3})\b/g)];
- const number=matches.length?matches[matches.length-1][1]+'/'+matches[matches.length-1][2]:'';
- return {names:names.slice(0,7),number};
+ const nameLines=(texts.name||[]).flatMap(t=>t.split(/\r?\n/)).map(t=>t.trim()).filter(Boolean);
+ const names=[];
+ for(const line of nameLines){
+  const cleaned=line.replace(/\b(?:BASIC|STAGE\s*\d+|HP\s*\d+|POKÉMON|POKEMON)\b/gi,'')
+    .replace(/[^a-zA-Z0-9éÉ♀♂ .'-]/g,' ').replace(/\s+/g,' ').trim();
+  if(cleaned.length>=3&&cleaned.length<=34&&/[a-zA-Z]{3}/.test(cleaned)&&!/^\d/.test(cleaned)&&!names.includes(cleaned))names.push(cleaned);
+ }
+ const bottom=(texts.number||[]).join('\n');
+ const matches=[...bottom.matchAll(/\b(\d{1,4})\s*[/\\]\s*(\d{1,4})\b/g)];
+ const number=matches.length?matches[0][1]+'/'+matches[0][2]:'';
+ return {names:names.slice(0,3),number};
 }
 $('#photo').onchange=e=>{photo=e.target.files?.[0];$('#scanmatches').innerHTML='';if(photo){$('#preview').src=URL.createObjectURL(photo);$('#preview').hidden=false;$('#scanbtn').disabled=false;$('#scanstatus').textContent='Foto geselecteerd. Tik op Herken kaart.'}};
 $('#scanbtn').onclick=async()=>{if(!photo)return;$('#scanbtn').disabled=true;$('#scanmatches').innerHTML='';$('#scanstatus').textContent='Tekstherkenning laden…';try{
