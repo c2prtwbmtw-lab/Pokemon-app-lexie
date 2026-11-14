@@ -1,0 +1,14 @@
+PokéVault v1 - proefversie
+
+Upload alle bestanden naar de hoofdmap van een GitHub Pages-repository.
+Open de Pages-link in Safari en kies Deel > Zet op beginscherm.
+
+Functies: camera/foto met OCR, kaartzoeken, Cardmarket-prijsindicatie via TCGdex, collectie, aankoopbedragen, winst/verlies en JSON-back-up.
+
+BELANGRIJK:
+- Scannen is experimenteel: OCR leest de naam; de gebruiker bevestigt de juiste set.
+- Cardmarket-prijzen zijn indicatief en kunnen ontbreken of vertraagd zijn.
+- Prijzen worden bij toevoegen opgeslagen; automatische dagelijkse prijsverversing is nog NIET ingebouwd.
+- Uitvoering/conditie veranderen de prijsindicatie nog niet.
+- Collectie staat lokaal in de browser. Exporteer regelmatig een back-up.
+- Internet vereist voor kaartzoeken, prijsgegevens en eerste OCR-download.
