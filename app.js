@@ -5,30 +5,56 @@ if(!Array.isArray(matches))matches=[];if(name)matches=matches.filter(c=>normaliz
 $('#find').onclick=()=>search();['query','cardnumber','setquery'].forEach(id=>$('#'+id).onkeydown=e=>{if(e.key==='Enter')search()});
 $('#manual').onclick=()=>{$('#detailcontent').innerHTML=`<h2>Eigen kaart opslaan</h2><p class="muted">Ook als een kaart niet in de catalogus staat, kun je hem toevoegen. Zonder automatische marktprijs.</p><label>Naam<input id="customname" placeholder="Pokémon-naam"></label><label>Serie<input id="customset" value="${safe($('#setquery').value)}" placeholder="Set / serie"></label><label>Kaartnummer<input id="customnumber" value="${safe($('#cardnumber').value)}" placeholder="Bijv. 025/198"></label><label>Uitvoering<select id="customvariant"><option>Normaal</option><option>Holo</option><option>Reverse holo</option><option>Overig</option></select></label><label>Aantal<input type="number" id="customqty" min="1" value="1"></label><label>Aankoopprijs per kaart (€)<input type="number" id="custompaid" min="0" step="0.01" value="0"></label><label>Geschatte marktprijs per kaart (€), optioneel<input type="number" id="custommarket" min="0" step="0.01" value="0"></label><button class="primary" id="customsave">Opslaan in mijn verzameling</button>`;$('#detail').showModal();$('#customsave').onclick=()=>{let name=$('#customname').value.trim();if(!name){alert('Vul een kaartnaam in.');return}collection.unshift({id:'manual-'+Date.now(),name,set:$('#customset').value.trim(),setId:allSets.find(s=>normalize(s.name)===normalize($('#customset').value.trim()))?.id||'',number:$('#customnumber').value.trim(),image:'',variant:$('#customvariant').value,qty:Math.max(1,Number($('#customqty').value)||1),paid:Math.max(0,Number($('#custompaid').value)||0),market:Math.max(0,Number($('#custommarket').value)||0),date:new Date().toISOString(),manual:true});save();$('#detail').close();go('collection')}};
 async function detail(id){$('#detailcontent').innerHTML='<p>Kaart en prijs ophalen…</p>';$('#detail').showModal();try{let c=await api('/cards/'+encodeURIComponent(id));current=c;let variants=c.pricing?.cardmarket||{};let variantsText=Object.keys(variants).length?'Cardmarket-gegevens beschikbaar':'Geen Cardmarket-prijs voor deze kaart';$('#detailcontent').innerHTML=`<img src="${safe(c.image?c.image+'/high.webp':'')}"><h2>${safe(c.name)}</h2><p>${safe(c.set?.name||c.id)} · ${safe(c.localId)}</p><p class="muted">${variantsText}. Prijsindicatie, niet conditie- of taalspecifiek.</p><h2>${price(c)?eur(price(c)):'Prijs onbekend'}</h2><label>Uitvoering<select id="variant"><option>Normaal</option><option>Holo</option><option>Reverse holo</option><option>Overig</option></select></label><label>Aantal<input type="number" id="qty" value="1" min="1"></label><label>Aankoopprijs per kaart (€)<input type="number" id="paid" value="0" min="0" step="0.01"></label><button class="primary" id="add">+ Toevoegen aan verzameling</button>`;$('#add').onclick=()=>{let qty=Math.max(1,Number($('#qty').value)||1),paid=Math.max(0,Number($('#paid').value)||0);collection.unshift({id:c.id,name:c.name,set:c.set?.name||'',setId:c.set?.id||c.id.split('-').slice(0,-1).join('-'),number:c.localId||'',image:img(c),variant:$('#variant').value,qty,paid,market:price(c),date:new Date().toISOString()});save();$('#detail').close();go('collection')}}catch(e){$('#detailcontent').textContent=e.message}}// Scanner v3: tekstherkenning, kandidaatselectie en bevestiging voor opslaan.
-function scanCandidates(cards,ocrName,ocrNumber){
- const norm=normalize;const number=ocrNumber?.split('/')[0].replace(/^0+(?=\d)/,'')||'';
- const scored=cards.map(c=>{let cn=norm(c.name),n=norm(ocrName),num=String(c.localId||c.id.split('-').pop()).replace(/^0+(?=\d)/,'');let score=(n&&cn===n?100:n&&cn.includes(n)?60:n&&n.includes(cn)?35:0)+(number&&num===number?110:0);return {c,score}}).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
- const unique=[...new Map(scored.map(x=>[x.c.id,x])).values()].slice(0,30);
- const el=$('#scanmatches');el.innerHTML='';
- if(!unique.length){$('#scanstatus').textContent='Geen zekere match. Controleer de tekst of zoek handmatig.';return}
- const certain=unique.length===1&&unique[0].score>=100;
- $('#scanstatus').textContent=certain?'Eén mogelijke kaart gevonden. Controleer de set en uitvoering.':`${unique.length} mogelijke kaarten gevonden. Kies de juiste afbeelding, serie en kaartnummer.`;
- el.innerHTML=`<h3>${certain?'Gevonden kaart':'Kies jouw gescande kaart'}</h3>`+unique.map(({c},i)=>`<button class="item" data-scanmatch="${i}">${c.image?`<img loading="lazy" src="${safe(img(c))}" alt="">`:''}<div><strong>${safe(c.name)}</strong><p>${safe(c._set||allSets.find(x=>c.id.startsWith(x.id+'-'))?.name||c.id.split('-')[0])}</p><p>Nummer: ${safe(c.localId||c.id.split('-').pop())}</p><span class="muted">Bekijk prijs en voeg toe →</span></div></button>`).join('');
+// V5: multiple OCR regions, tolerant catalog lookup, explicit ambiguity handling.
+function scanCandidates(cards,ocrNames,ocrNumber){
+ const names=Array.isArray(ocrNames)?ocrNames:[ocrNames];const nnum=String(ocrNumber||'').split('/')[0].replace(/^0+(?=\d)/,'');
+ const scored=[...new Map(cards.filter(c=>c?.id).map(c=>[c.id,c])).values()].map(c=>{
+  const cn=normalize(c.name),num=String(c.localId||c.id.split('-').pop()).replace(/^0+(?=\d)/,'');
+  let ns=0;for(const n0 of names){const n=normalize(n0);if(n.length<3)continue;ns=Math.max(ns,cn===n?130:cn.startsWith(n)&&n.length>=4?85:n.startsWith(cn)&&cn.length>=4?65:cn.includes(n)&&n.length>=5?55:0)}
+  const numberScore=nnum&&num===nnum?110:0;
+  return {c,score:ns+numberScore,ns,numberScore};
+ }).filter(x=>x.score>=55).sort((a,b)=>b.score-a.score);
+ const unique=scored.slice(0,24),el=$('#scanmatches');el.innerHTML='';
+ if(!unique.length){$('#scanstatus').textContent='Nog geen betrouwbare overeenkomst. Probeer een scherpere foto of gebruik handmatig zoeken.';return false}
+ const best=unique[0],second=unique[1];const certain=best.ns>=130&&best.numberScore===110&&(!second||best.score-second.score>=80);
+ $('#scanstatus').textContent=certain?'Naam én nummer herkend. Controleer de uitvoering.':`${unique.length} mogelijke kaarten. Kies de juiste afbeelding en serie.`;
+ el.innerHTML=`<h3>${certain?'Kaart herkend':'Mogelijke kaarten'}</h3>`+unique.map(({c},i)=>`<button class="item" data-scanmatch="${i}">${c.image?`<img loading="lazy" src="${safe(img(c))}" alt="">`:''}<div><strong>${safe(c.name)}</strong><p>${safe(c._set||allSets.find(x=>c.id.startsWith(x.id+'-'))?.name||c.id.split('-')[0])}</p><p>Nummer: ${safe(c.localId||c.id.split('-').pop())}</p><span class="muted">Bekijk prijs en voeg toe →</span></div></button>`).join('');
  el.querySelectorAll('[data-scanmatch]').forEach(btn=>btn.onclick=()=>detail(unique[Number(btn.dataset.scanmatch)].c.id));
- if(certain)detail(unique[0].c.id);
+ if(certain)detail(best.c.id);return true;
+}
+async function scanRegions(file){
+ const bitmap=await createImageBitmap(file);const w=bitmap.width,h=bitmap.height;
+ const regions=[[0,0,1,1],[0,0,1,.34],[0,.72,1,.28]];
+ const worker=await Tesseract.createWorker('eng');let output=[];
+ try{for(let i=0;i<regions.length;i++){
+  $('#scanstatus').textContent=`Kaart herkennen… stap ${i+1} van ${regions.length}`;
+  const [rx,ry,rw,rh]=regions[i],cw=Math.round(w*rw),ch=Math.round(h*rh);
+  const canvas=document.createElement('canvas');const scale=Math.min(2.2,1600/cw);canvas.width=Math.round(cw*scale);canvas.height=Math.round(ch*scale);
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.fillStyle='white';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(bitmap,Math.round(w*rx),Math.round(h*ry),cw,ch,0,0,canvas.width,canvas.height);
+  const r=await worker.recognize(canvas);output.push(r.data.text||'');
+ }}finally{await worker.terminate();bitmap.close?.()}
+ return output;
+}
+function extractScanText(texts){
+ const raw=texts.join('\n'),lines=texts.flatMap(t=>t.split(/\r?\n/)).map(x=>x.trim()).filter(Boolean);
+ const blacklist=/^(basic|stage|trainer|pokemon|pokémon|hp\s*\d+|illustrator|weakness|resistance|retreat|ability|attack|supporter|item|energy|evolves|rule|©|damage|search|draw|flip|your|opponent|this|during|once|put|attach|discard|bench|active|from|when|each|the|you|it|if|a\s)/i;
+ const names=[];for(const line of lines){let cleaned=line.replace(/\b(?:HP|LV|EX|GX|VSTAR|VMAX)\s*\d+\b/gi,'').replace(/[^a-zA-Z0-9éÉ♀♂ .'-]/g,' ').replace(/\s+/g,' ').trim();if(cleaned.length>=3&&cleaned.length<=32&&/[a-zA-Z]{3}/.test(cleaned)&&!blacklist.test(cleaned)&&!/^\d/.test(cleaned)&&!names.includes(cleaned))names.push(cleaned)}
+ const matches=[...raw.matchAll(/\b(\d{1,3})\s*[/\\]\s*(\d{1,3})\b/g)];
+ const number=matches.length?matches[matches.length-1][1]+'/'+matches[matches.length-1][2]:'';
+ return {names:names.slice(0,7),number};
 }
 $('#photo').onchange=e=>{photo=e.target.files?.[0];$('#scanmatches').innerHTML='';if(photo){$('#preview').src=URL.createObjectURL(photo);$('#preview').hidden=false;$('#scanbtn').disabled=false;$('#scanstatus').textContent='Foto geselecteerd. Tik op Herken kaart.'}};
 $('#scanbtn').onclick=async()=>{if(!photo)return;$('#scanbtn').disabled=true;$('#scanmatches').innerHTML='';$('#scanstatus').textContent='Tekstherkenning laden…';try{
  if(!window.Tesseract){await new Promise((res,rej)=>{let s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';s.onload=res;s.onerror=rej;document.head.append(s)})}
- $('#scanstatus').textContent='Kaart en kaartnummer herkennen…';let out=await Tesseract.recognize(photo,'eng');let raw=out.data.text||'';let lines=raw.split('\n').map(x=>x.trim()).filter(Boolean);
- let blacklist=/^(basic|stage|trainer|pokemon|pokémon|hp\s*\d+|illustrator|weakness|resistance|retreat|ability|attack|supporter|item|energy|evolves|rule|©)/i;
- let names=lines.filter(x=>/^[a-z][a-z .'-]{2,26}$/i.test(x)&&!blacklist.test(x)).slice(0,5);
- let numberMatch=raw.match(/\b(\d{1,3})\s*[/\\]\s*(\d{1,3})\b/);let number=numberMatch?numberMatch[1]+'/'+numberMatch[2]:'';
- let results=[];for(let name of names.slice(0,3)){try{let cards=await api('/cards?name='+encodeURIComponent(name));if(Array.isArray(cards))results.push(...cards)}catch{}}
- if(number){try{let cards=await api('/cards?localId='+encodeURIComponent(String(Number(number.split('/')[0]))));if(Array.isArray(cards))results.push(...cards)}catch{}}
- if(!results.length){$('#scanstatus').textContent='Geen kaarten gevonden. Je kunt de herkende gegevens handmatig zoeken.'}else scanCandidates(results,names[0]||'',number);
- const manual=document.createElement('button');manual.textContent='Zoek of corrigeer handmatig';manual.className='primary';manual.onclick=()=>{$('#query').value=names[0]||'';$('#cardnumber').value=number;$('#setquery').value='';go('search');};$('#scanmatches').append(manual);
- }catch(e){$('#scanstatus').textContent='Herkennen mislukt: '+e.message+'. Probeer opnieuw met meer licht.'}finally{$('#scanbtn').disabled=false}};
+ const texts=await scanRegions(photo);const {names,number}=extractScanText(texts);
+ $('#scanstatus').textContent='Vergelijken met Pokémon-catalogus…';let results=[];
+ // Query likely names first, then card number. Limit requests for mobile performance.
+ for(const name of names.slice(0,5)){try{const cards=await api('/cards?name='+encodeURIComponent(name));if(Array.isArray(cards))results.push(...cards)}catch{}}
+ if(number){for(const id of [...new Set([number.split('/')[0],String(Number(number.split('/')[0]))])]){try{const cards=await api('/cards?localId='+encodeURIComponent(id));if(Array.isArray(cards))results.push(...cards)}catch{}}}
+ const found=scanCandidates(results,names,number);
+ const manual=document.createElement('button');manual.textContent='Zelf zoeken of gegevens corrigeren';manual.className='primary';manual.onclick=()=>{$('#query').value=names[0]||'';$('#cardnumber').value=number;$('#setquery').value='';go('search')};$('#scanmatches').append(manual);
+ if(!found)$('#scanstatus').textContent=`Geen zekere match gevonden${number?' voor '+number:''}. Probeer een foto recht van boven met voldoende licht.`;
+ }catch(e){$('#scanstatus').textContent='Herkennen mislukt: '+e.message+'. Probeer een scherpere foto.'}finally{$('#scanbtn').disabled=false}};
 $('#backup').onclick=()=>{let blob=new Blob([JSON.stringify({version:1,collection},null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='pokevault-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};$('#importbtn').onclick=()=>$('#importfile').click();$('#importfile').onchange=async e=>{try{let data=JSON.parse(await e.target.files[0].text());if(!Array.isArray(data.collection))throw Error('Ongeldige back-up');if(confirm('Huidige collectie vervangen door de back-up?')){collection=data.collection;save()}}catch(err){alert('Import mislukt: '+err.message)}};render();if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 
 // V4: series, unieke-setvoortgang, raw-waarde en expliciet ingevoerde PSA-verkoopscenario's.
